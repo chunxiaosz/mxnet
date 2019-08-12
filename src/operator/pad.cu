@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /*!
  * Copyright (c) 2015 by Contributors
  * \file pad.cu
@@ -37,9 +56,9 @@ __global__ void image_2d_pad_edge_kernel(Tensor<gpu, 4, DType> dst,
   int oStartY = max(0, padT);
 
   int inputPointX =
-      min(max(padL, outputPointX), src.size(3) + padL - 1) - oStartX + iStartX;
+      min(max(padL, outputPointX), static_cast<int>(src.size(3)) + padL - 1) - oStartX + iStartX;
   int inputPointY =
-      min(max(padT, outputPointY), src.size(2) + padT - 1) - oStartY + iStartY;
+      min(max(padT, outputPointY), static_cast<int>(src.size(2)) + padT - 1) - oStartY + iStartY;
 
   DType valueToCopy = src[batch][plane][inputPointY][inputPointX];
   dst[batch][plane][outputPointY][outputPointX] = valueToCopy;
@@ -59,6 +78,7 @@ inline void image_pad_edge(Tensor<gpu, 4, DType> dst,
   image_2d_pad_edge_kernel<kBaseThreadBits,
                            DType><<<dimGrid, dimBlock, 0, stream>>>(dst, src,
                                                                     padT, padL);
+  MSHADOW_CUDA_POST_KERNEL_CHECK(image_2d_pad_edge_kernel);
 }
 
 template <int n_bits, typename DType>
@@ -78,9 +98,9 @@ __global__ void image_2d_pad_edge_grad_kernel(
   int iStartY = max(0, -padT);
   int oStartX = max(0, padL);
   int oStartY = max(0, padT);
-  int inputPointX = min(max(padL, outputPointX), grad_in.size(3) + padL - 1) -
+  int inputPointX = min(max(padL, outputPointX), static_cast<int>(grad_in.size(3)) + padL - 1) -
                     oStartX + iStartX;
-  int inputPointY = min(max(padT, outputPointY), grad_in.size(2) + padT - 1) -
+  int inputPointY = min(max(padT, outputPointY), static_cast<int>(grad_in.size(2)) + padT - 1) -
                     oStartY + iStartY;
   DType valueToCopy = grad_out[batch][plane][outputPointY][outputPointX];
   atomicAdd(&grad_in[batch][plane][inputPointY][inputPointX], valueToCopy);
@@ -100,6 +120,7 @@ inline void image_pad_edge_grad(Tensor<gpu, 4, DType> grad_in,
   image_2d_pad_edge_grad_kernel<kBaseThreadBits,
                                 DType><<<dimGrid, dimBlock, 0, stream>>>(
       grad_in, grad_out, padT, padL);
+  MSHADOW_CUDA_POST_KERNEL_CHECK(image_2d_pad_edge_grad_kernel);
 }
 
 // Case 2: Constant Padding
@@ -147,6 +168,7 @@ inline void image_pad_constant(Tensor<gpu, 4, DType> dst,
   image_2d_pad_constant_kernel<kBaseThreadBits,
                                DType><<<dimGrid, dimBlock, 0, stream>>>(
       dst, src, padT, padL, constant);
+  MSHADOW_CUDA_POST_KERNEL_CHECK(image_2d_pad_constant_kernel);
 }
 
 template <int n_bits, typename DType>
@@ -183,6 +205,7 @@ inline void image_pad_constant_grad(Tensor<gpu, 4, DType> grad_in,
   image_2d_pad_constant_grad_kernel<kBaseThreadBits,
                                     DType><<<dimGrid, dimBlock, 0, stream>>>(
       grad_in, grad_out, padT, padL);
+  MSHADOW_CUDA_POST_KERNEL_CHECK(image_2d_pad_constant_grad_kernel);
 }
 
 
@@ -238,6 +261,7 @@ inline void image_pad_reflect(Tensor<gpu, 4, DType> dst,
   image_2d_pad_reflect_kernel<kBaseThreadBits,
                            DType><<<dimGrid, dimBlock, 0, stream>>>(dst, src,
                                                                     padT, padL);
+  MSHADOW_CUDA_POST_KERNEL_CHECK(image_2d_pad_reflect_kernel);
 }
 
 template <int n_bits, typename DType>
@@ -288,6 +312,7 @@ inline void image_pad_reflect_grad(Tensor<gpu, 4, DType> grad_in,
   image_2d_pad_reflect_grad_kernel<kBaseThreadBits,
                                 DType><<<dimGrid, dimBlock, 0, stream>>>(
       grad_in, grad_out, padT, padL);
+  MSHADOW_CUDA_POST_KERNEL_CHECK(image_2d_pad_reflect_grad_kernel);
 }
 
 
@@ -321,11 +346,11 @@ __global__ void image_3d_pad_edge_kernel(Tensor<gpu, 5, DType> dst,
   int oStartZ = max(0, padF);
 
   int inputPointX =
-      min(max(padL, outputPointX), src.size(4) + padL - 1) - oStartX + iStartX;
+      min(max(padL, outputPointX), static_cast<int>(src.size(4)) + padL - 1) - oStartX + iStartX;
   int inputPointY =
-      min(max(padT, outputPointY), src.size(3) + padT - 1) - oStartY + iStartY;
+      min(max(padT, outputPointY), static_cast<int>(src.size(3)) + padT - 1) - oStartY + iStartY;
   int inputPointZ =
-      min(max(padF, outputPointZ), src.size(2) + padF - 1) - oStartZ + iStartZ;
+      min(max(padF, outputPointZ), static_cast<int>(src.size(2)) + padF - 1) - oStartZ + iStartZ;
 
   DType valueToCopy = src[batch][plane][inputPointZ][inputPointY][inputPointX];
   dst[batch][plane][outputPointZ][outputPointY][outputPointX] = valueToCopy;
@@ -346,6 +371,7 @@ inline void image_pad_edge(Tensor<gpu, 5, DType> dst,
   image_3d_pad_edge_kernel<kBaseThreadBits,
                            DType><<<dimGrid, dimBlock, 0, stream>>>(
       dst, src, padF, padT, padL);
+  MSHADOW_CUDA_POST_KERNEL_CHECK(image_3d_pad_edge_kernel);
 }
 
 template <int n_bits, typename DType>
@@ -369,11 +395,11 @@ __global__ void image_3d_pad_edge_grad_kernel(
   int oStartY = max(0, padT);
   int oStartZ = max(0, padF);
 
-  int inputPointX = min(max(padL, outputPointX), grad_in.size(4) + padL - 1) -
+  int inputPointX = min(max(padL, outputPointX), static_cast<int>(grad_in.size(4)) + padL - 1) -
                     oStartX + iStartX;
-  int inputPointY = min(max(padT, outputPointY), grad_in.size(3) + padT - 1) -
+  int inputPointY = min(max(padT, outputPointY), static_cast<int>(grad_in.size(3)) + padT - 1) -
                     oStartY + iStartY;
-  int inputPointZ = min(max(padF, outputPointZ), grad_in.size(2) + padF - 1) -
+  int inputPointZ = min(max(padF, outputPointZ), static_cast<int>(grad_in.size(2)) + padF - 1) -
                     oStartZ + iStartZ;
   DType valueToCopy =
       grad_out[batch][plane][outputPointZ][outputPointY][outputPointX];
@@ -397,6 +423,7 @@ inline void image_pad_edge_grad(Tensor<gpu, 5, DType> grad_in,
   image_3d_pad_edge_grad_kernel<kBaseThreadBits,
                                 DType><<<dimGrid, dimBlock, 0, stream>>>(
       grad_in, grad_out, padF, padT, padL);
+  MSHADOW_CUDA_POST_KERNEL_CHECK(image_3d_pad_edge_grad_kernel);
 }
 
 // Case 2: Constant Padding
@@ -454,6 +481,7 @@ inline void image_pad_constant(Tensor<gpu, 5, DType> dst,
   image_3d_pad_constant_kernel<kBaseThreadBits,
                                DType><<<dimGrid, dimBlock, 0, stream>>>(
       dst, src, padF, padT, padL, constant);
+  MSHADOW_CUDA_POST_KERNEL_CHECK(image_3d_pad_constant_kernel);
 }
 
 template <int n_bits, typename DType>
@@ -496,6 +524,7 @@ inline void image_pad_constant_grad(Tensor<gpu, 5, DType> grad_in,
   image_3d_pad_constant_grad_kernel<kBaseThreadBits,
                                     DType><<<dimGrid, dimBlock, 0, stream>>>(
       grad_in, grad_out, padF, padT, padL);
+  MSHADOW_CUDA_POST_KERNEL_CHECK(image_3d_pad_constant_grad_kernel);
 }
 
 // Case 3: Reflection Padding
@@ -559,6 +588,7 @@ inline void image_pad_reflect(Tensor<gpu, 5, DType> dst,
   image_3d_pad_reflect_kernel<kBaseThreadBits,
                            DType><<<dimGrid, dimBlock, 0, stream>>>(
       dst, src, padF, padT, padL);
+  MSHADOW_CUDA_POST_KERNEL_CHECK(image_3d_pad_reflect_kernel);
 }
 
 template <int n_bits, typename DType>
@@ -651,6 +681,7 @@ inline void image_pad_reflect_grad(Tensor<gpu, 5, DType> grad_in,
   image_3d_pad_reflect_grad_kernel<kBaseThreadBits,
                                 DType><<<dimGrid, dimBlock, 0, stream>>>(
       grad_in, grad_out, padF, padT, padL);
+  MSHADOW_CUDA_POST_KERNEL_CHECK(image_3d_pad_reflect_grad_kernel);
 }
 
 ////////////////////////////////////////////////////////////////////////////////

@@ -1,13 +1,30 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /*!
- * Copyright (c) 2016 by Contributors
  */
 #include <string>
 #include <vector>
 #include <map>
-
+#include <fstream>
+#include "utils.h"
 #include "mxnet-cpp/MxNetCpp.h"
-// Allow IDE to parse the types
-#include "../include/mxnet-cpp/op.h"
 
 using namespace mxnet::cpp;
 
@@ -98,68 +115,84 @@ Symbol GoogleNetSymbol(int num_classes) {
 
 int main(int argc, char const *argv[]) {
   int batch_size = 50;
-  int max_epoch = 100;
+  int max_epoch = argc > 1 ? strtol(argv[1], NULL, 10) : 100;
   float learning_rate = 1e-4;
   float weight_decay = 1e-4;
 
+  auto ctx = Context::gpu();
+#if MXNET_USE_CPU
+  ctx = Context::cpu();;
+#endif
+
+  TRY
   auto googlenet = GoogleNetSymbol(10);
   std::map<std::string, NDArray> args_map;
   std::map<std::string, NDArray> aux_map;
 
-  args_map["data"] = NDArray(Shape(batch_size, 3, 256, 256), Context::gpu());
-  args_map["data_label"] = NDArray(Shape(batch_size), Context::gpu());
-  googlenet.InferArgsMap(Context::gpu(), &args_map, args_map);
+  args_map["data"] = NDArray(Shape(batch_size, 3, 256, 256), ctx);
+  args_map["data_label"] = NDArray(Shape(batch_size), ctx);
+  googlenet.InferArgsMap(ctx, &args_map, args_map);
 
-  auto train_iter = MXDataIter("ImageRecordIter")
-      .SetParam("path_imglist", "./train.lst")
-      .SetParam("path_imgrec", "./train.rec")
-      .SetParam("data_shape", Shape(3, 256, 256))
-      .SetParam("batch_size", batch_size)
-      .SetParam("shuffle", 1)
-      .CreateDataIter();
+  std::vector<std::string> data_files = { "./data/mnist_data/train-images-idx3-ubyte",
+                                          "./data/mnist_data/train-labels-idx1-ubyte",
+                                          "./data/mnist_data/t10k-images-idx3-ubyte",
+                                          "./data/mnist_data/t10k-labels-idx1-ubyte"
+                                        };
 
-  auto val_iter = MXDataIter("ImageRecordIter")
-      .SetParam("path_imglist", "./val.lst")
-      .SetParam("path_imgrec", "./_val.rec")
-      .SetParam("data_shape", Shape(3, 256, 256))
-      .SetParam("batch_size", batch_size)
-      .CreateDataIter();
+  auto train_iter =  MXDataIter("MNISTIter");
+  if (!setDataIter(&train_iter, "Train", data_files, batch_size)) {
+    return 1;
+  }
 
-  Optimizer* opt = OptimizerRegistry::Find("ccsgd");
+  auto val_iter = MXDataIter("MNISTIter");
+  if (!setDataIter(&val_iter, "Label", data_files, batch_size)) {
+    return 1;
+  }
+
+  Optimizer* opt = OptimizerRegistry::Find("sgd");
   opt->SetParam("momentum", 0.9)
      ->SetParam("rescale_grad", 1.0 / batch_size)
-     ->SetParam("clip_gradient", 10);
+     ->SetParam("clip_gradient", 10)
+     ->SetParam("lr", learning_rate)
+     ->SetParam("wd", weight_decay);
+
+
+  auto *exec = googlenet.SimpleBind(ctx, args_map);
+  auto arg_names = googlenet.ListArguments();
 
   for (int iter = 0; iter < max_epoch; ++iter) {
     LG << "Epoch: " << iter;
     train_iter.Reset();
     while (train_iter.Next()) {
       auto data_batch = train_iter.GetDataBatch();
-      args_map["data"] = data_batch.data.Copy(Context::gpu());
-      args_map["data_label"] = data_batch.label.Copy(Context::gpu());
+      data_batch.data.CopyTo(&args_map["data"]);
+      data_batch.label.CopyTo(&args_map["data_label"]);
       NDArray::WaitAll();
-      auto *exec = googlenet.SimpleBind(Context::gpu(), args_map);
       exec->Forward(true);
       exec->Backward();
-      exec->UpdateAll(opt, learning_rate, weight_decay);
-      delete exec;
+      for (size_t i = 0; i < arg_names.size(); ++i) {
+        if (arg_names[i] == "data" || arg_names[i] == "data_label") continue;
+        opt->Update(i, exec->arg_arrays[i], exec->grad_arrays[i]);
+      }
     }
 
     Accuracy acu;
     val_iter.Reset();
     while (val_iter.Next()) {
       auto data_batch = val_iter.GetDataBatch();
-      args_map["data"] = data_batch.data.Copy(Context::gpu());
-      args_map["data_label"] = data_batch.label.Copy(Context::gpu());
+      data_batch.data.CopyTo(&args_map["data"]);
+      data_batch.label.CopyTo(&args_map["data_label"]);
       NDArray::WaitAll();
-      auto *exec = googlenet.SimpleBind(Context::gpu(), args_map);
       exec->Forward(false);
       NDArray::WaitAll();
       acu.Update(data_batch.label, exec->outputs[0]);
-      delete exec;
     }
     LG << "Accuracy: " << acu.Get();
   }
+
+  delete exec;
+  delete opt;
   MXNotifyShutdown();
+  CATCH
   return 0;
 }

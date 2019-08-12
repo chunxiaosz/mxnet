@@ -1,10 +1,60 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
 """A sphnix-doc plugin to build mxnet docs"""
+from __future__ import print_function
 import subprocess
 import re
 import os
 import json
+import sys
 from recommonmark import transform
 import pypandoc
+import contextlib
+# Use six for Python 2 / 3 compatibility
+from six import StringIO
+from six.moves import configparser
+
+_BUILD_VER = os.getenv('BUILD_VER', 'default')
+print("Building version {}".format(_BUILD_VER))
+_DOC_SET = 'document_sets_' + _BUILD_VER
+
+parser = configparser.SafeConfigParser()
+parser.read('settings.ini')
+
+if _DOC_SET not in parser.sections():
+    _DOC_SET = 'document_sets_default'
+
+for section in [ _DOC_SET ]:
+    print("Document sets to generate:")
+    for candidate in [ 'scala_docs', 'java_docs', 'clojure_docs', 'doxygen_docs', 'julia_docs', 'r_docs' ]:
+        print('%-12s  : %s' % (candidate, parser.get(section, candidate)))
+
+_MXNET_DOCS_BUILD_MXNET = parser.getboolean('mxnet', 'build_mxnet')
+_SCALA_DOCS = parser.getboolean(_DOC_SET, 'scala_docs')
+_JAVA_DOCS = parser.getboolean(_DOC_SET, 'java_docs')
+_CLOJURE_DOCS = parser.getboolean(_DOC_SET, 'clojure_docs')
+_DOXYGEN_DOCS = parser.getboolean(_DOC_SET,  'doxygen_docs')
+_R_DOCS = parser.getboolean(_DOC_SET, 'r_docs')
+_JULIA_DOCS = parser.getboolean(_DOC_SET, 'julia_docs')
+_ARTIFACTS = parser.getboolean(_DOC_SET, 'artifacts')
+
+# white list to evaluate the code block output, such as ['tutorials/gluon']
+_EVAL_WHILTELIST = []
 
 # start or end of a code block
 _CODE_MARK = re.compile('^([ ]*)```([\w]*)')
@@ -12,12 +62,12 @@ _CODE_MARK = re.compile('^([ ]*)```([\w]*)')
 # language names and the according file extensions and comment symbol
 _LANGS = {'python' : ('py', '#'),
           'r' : ('R','#'),
-          'scala' : ('scala', '#'),
+          'scala' : ('scala', '//'),
+          'java' : ('java', '//'),
           'julia' : ('jl', '#'),
           'perl' : ('pl', '#'),
           'cpp' : ('cc', '//'),
           'bash' : ('sh', '#')}
-
 _LANG_SELECTION_MARK = 'INSERT SELECTION BUTTONS'
 _SRC_DOWNLOAD_MARK = 'INSERT SOURCE DOWNLOAD BUTTONS'
 
@@ -39,29 +89,89 @@ def generate_doxygen(app):
 
 def build_mxnet(app):
     """Build mxnet .so lib"""
-    _run_cmd("cd %s/.. && cp make/config.mk config.mk && make -j$(nproc) DEBUG=1" %
-            app.builder.srcdir)
+    if not os.path.exists(os.path.join(app.builder.srcdir, '..', 'config.mk')):
+        _run_cmd("cd %s/.. && cp make/config.mk config.mk && make -j$(nproc) USE_MKLDNN=0 USE_CPP_PACKAGE=1 " %
+                app.builder.srcdir)
+    else:
+        _run_cmd("cd %s/.. && make -j$(nproc) USE_MKLDNN=0 USE_CPP_PACKAGE=1 " %
+                app.builder.srcdir)
+
+def build_julia_docs(app):
+    """build Julia docs"""
+    os.environ['MXNET_HOME'] = os.path.abspath(os.path.join(app.builder.srcdir, '..'))
+    print("Julia will check for MXNet in {}/lib".format(os.environ.get('MXNET_HOME')))
+    dest_path = app.builder.outdir + '/api/julia/site'
+    _run_cmd('cd {}/.. && make -C julia/docs'.format(app.builder.srcdir))
+    _run_cmd('mkdir -p {}'.format(dest_path))
+    _run_cmd('cd {}/.. && cp -a julia/docs/site/* {}'.format(app.builder.srcdir, dest_path))
 
 def build_r_docs(app):
     """build r pdf"""
     r_root = app.builder.srcdir + '/../R-package'
-    pdf_path = root_path + '/docs/api/r/mxnet-r-reference-manual.pdf'
+    pdf_path = app.builder.srcdir + '/api/r/mxnet-r-reference-manual.pdf'
     _run_cmd('cd ' + r_root +
              '; R -e "roxygen2::roxygenize()"; R CMD Rd2pdf . --no-preview -o ' + pdf_path)
     dest_path = app.builder.outdir + '/api/r/'
     _run_cmd('mkdir -p ' + dest_path + '; mv ' + pdf_path + ' ' + dest_path)
 
+def build_scala(app):
+    """build scala for scala docs, java docs, and clojure docs to use"""
+    if any(v in _BUILD_VER for v in ['1.2.', '1.3.', '1.4.']):
+        _run_cmd("cd %s/.. && make scalapkg" % app.builder.srcdir)
+        _run_cmd("cd %s/.. && make scalainstall" % app.builder.srcdir)
+    else:
+        _run_cmd("cd %s/../scala-package && mvn -B install -DskipTests" % app.builder.srcdir)
+
 def build_scala_docs(app):
     """build scala doc and then move the outdir"""
-    scala_path = app.builder.srcdir + '/../scala-package/core/src/main/scala/ml/dmlc/mxnet'
-    # scaldoc fails on some apis, so exit 0 to pass the check
-    _run_cmd('cd ' + scala_path + '; scaladoc `find . | grep .*scala`; exit 0')
+    scala_path = app.builder.srcdir + '/../scala-package'
+    scala_doc_sources = 'find . -type f -name "*.scala" | egrep \"\.\/core|\.\/infer\" | egrep -v \"\/javaapi\"  | egrep -v \"Suite\"'
+    scala_doc_classpath = ':'.join([
+        '`find native -name "*.jar" | grep "target/lib/" | tr "\\n" ":" `',
+        '`find macros -name "*.jar" | tr "\\n" ":" `',
+        '`find core -name "*.jar" | tr "\\n" ":" `',
+        '`find infer -name "*.jar" | tr "\\n" ":" `'
+    ])
+    # There are unresolvable errors on mxnet 1.2.x. We are ignoring those errors while aborting the ci on newer versions
+    scala_ignore_errors = '; exit 0' if any(v in _BUILD_VER for v in ['1.2.', '1.3.']) else ''
+    _run_cmd('cd {}; scaladoc `{}` -classpath {} -feature -deprecation {}'
+             .format(scala_path, scala_doc_sources, scala_doc_classpath, scala_ignore_errors))
     dest_path = app.builder.outdir + '/api/scala/docs'
     _run_cmd('rm -rf ' + dest_path)
     _run_cmd('mkdir -p ' + dest_path)
-    scaladocs = ['index', 'index.html', 'ml', 'lib', 'index.js', 'package.html']
+    # 'index' and 'package.html' do not exist in later versions of scala; delete these after upgrading scala>2.12.x
+    scaladocs = ['index', 'index.html', 'org', 'lib', 'index.js', 'package.html']
     for doc_file in scaladocs:
-        _run_cmd('cd ' + scala_path + ' && mv -f ' + doc_file + ' ' + dest_path)
+        _run_cmd('cd ' + scala_path + ' && mv -f ' + doc_file + ' ' + dest_path + '; exit 0')
+
+def build_java_docs(app):
+    """build java docs and then move the outdir"""
+    java_path = app.builder.srcdir + '/../scala-package'
+    java_doc_sources = 'find . -type f -name "*.scala" | egrep \"\.\/core|\.\/infer\" | egrep \"\/javaapi\" | egrep -v \"Suite\"'
+    java_doc_classpath = ':'.join([
+        '`find native -name "*.jar" | grep "target/lib/" | tr "\\n" ":" `',
+        '`find macros -name "*.jar" | tr "\\n" ":" `',
+        '`find core -name "*.jar" | tr "\\n" ":" `',
+        '`find infer -name "*.jar" | tr "\\n" ":" `'
+    ])
+    _run_cmd('cd {}; scaladoc `{}` -classpath {} -feature -deprecation'
+             .format(java_path, java_doc_sources, java_doc_classpath))
+    dest_path = app.builder.outdir + '/api/java/docs'
+    _run_cmd('rm -rf ' + dest_path)
+    _run_cmd('mkdir -p ' + dest_path)
+    javadocs = ['index', 'index.html', 'org', 'lib', 'index.js', 'package.html']
+    for doc_file in javadocs:
+        _run_cmd('cd ' + java_path + ' && mv -f ' + doc_file + ' ' + dest_path + '; exit 0')
+
+def build_clojure_docs(app):
+    """build clojure doc and then move the outdir"""
+    clojure_path = app.builder.srcdir + '/../contrib/clojure-package'
+    _run_cmd('cd ' + clojure_path + '; lein codox')
+    dest_path = app.builder.outdir + '/api/clojure/docs'
+    _run_cmd('rm -rf ' + dest_path)
+    _run_cmd('mkdir -p ' + dest_path)
+    clojure_doc_path = app.builder.srcdir + '/../contrib/clojure-package/target/doc'
+    _run_cmd('cd ' + clojure_doc_path + ' && cp -r *  ' + dest_path + '; exit 0')
 
 def _convert_md_table_to_rst(table):
     """Convert a markdown table to rst format"""
@@ -157,12 +267,20 @@ def _get_lang_selection_btn(langs):
         btngroup += '</div>\n</div> <script type="text/javascript" src="../../_static/js/options.js"></script>'
     return btngroup
 
-def _get_blocks(lang, lines):
+def _get_blocks(lines):
+    """split lines into code and non-code blocks
+
+    Returns
+    -------
+    iterator of (bool, str, list of str)
+      - if it is a code block
+      - source language
+      - lines of source
+    """
     cur_block = []
+    pre_lang = None
     pre_in_code = None
     for (l, in_code, cur_lang, _) in _parse_code_lines(lines):
-        if in_code and cur_lang != lang:
-            in_code = False
         if in_code != pre_in_code:
             if pre_in_code and len(cur_block) >= 2:
                 cur_block = cur_block[1:-1] # remove ```
@@ -179,20 +297,69 @@ def _get_blocks(lang, lines):
                 else:
                     break
             if len(cur_block):
-                yield (pre_in_code, cur_block)
+                yield (pre_in_code, pre_lang, cur_block)
             cur_block = []
         cur_block.append(l)
+        pre_lang = cur_lang
         pre_in_code = in_code
     if len(cur_block):
-        yield (pre_in_code, cur_block)
+        yield (pre_in_code, pre_lang, cur_block)
 
-def _get_jupyter_notebook(lang, lines):
+def _get_mk_code_block(src, lang):
+    """Return a markdown code block
+
+    E.g.
+    ```python
+    import mxnet
+    ````
+    """
+    if lang is None:
+        lang = ''
+    return '```'+lang+'\n'+src.rstrip()+'\n'+'```\n'
+
+@contextlib.contextmanager
+def _string_io():
+    oldout = sys.stdout
+    olderr = sys.stderr
+    strio = StringIO.StringIO()
+    sys.stdout = strio
+    sys.stderr = strio
+    yield strio
+    sys.stdout = oldout
+    sys.stderr = olderr
+
+def _get_python_block_output(src, global_dict, local_dict):
+    """Evaluate python source codes
+
+    Returns
+    (bool, str):
+      - True if success
+      - output
+    """
+    src = '\n'.join([l for l in src.split('\n')
+                     if not l.startswith('%') and not 'plt.show()' in l])
+    ret_status = True
+    err = ''
+    with _string_io() as s:
+        try:
+            exec(src, global_dict, global_dict)
+        except Exception as e:
+            err = str(e)
+            ret_status = False
+    return (ret_status, s.getvalue()+err)
+
+def _get_jupyter_notebook(lang, all_lines):
     cells = []
-    for in_code, lines in _get_blocks(lang, lines):
+    # Exclude lines containing <!--notebook-skip-line-->
+    filtered_lines = [line for line in all_lines if "<!--notebook-skip-line-->" not in line]
+    for in_code, blk_lang, lines in _get_blocks(filtered_lines):
+        if blk_lang != lang:
+            in_code = False
+        src = '\n'.join(lines)
         cell = {
             "cell_type": "code" if in_code else "markdown",
             "metadata": {},
-            "source":  '\n'.join(lines)
+            "source":  src
         }
         if in_code:
              cell.update({
@@ -231,11 +398,15 @@ def _get_source(lang, lines):
 def _get_src_download_btn(out_prefix, langs, lines):
     btn = '<div class="btn-group" role="group">\n'
     for lang in langs:
-        ipynb = out_prefix + '_' + lang + '.ipynb'
+        ipynb = out_prefix
+        if lang == 'python':
+            ipynb += '.ipynb'
+        else:
+            ipynb += '_' + lang + '.ipynb'
         with open(ipynb, 'w') as f:
             json.dump(_get_jupyter_notebook(lang, lines), f)
         f = ipynb.split('/')[-1]
-        btn += '<div class="download_btn"><a href="%s" download="%s">' \
+        btn += '<div class="download-btn"><a href="%s" download="%s">' \
                '<span class="glyphicon glyphicon-download-alt"></span> %s</a></div>' % (f, f, f)
     btn += '</div>\n'
     return btn
@@ -247,6 +418,8 @@ def add_buttons(app, docname, source):
         os.makedirs(dirname)
 
     for i,j in enumerate(source):
+        local_dict = {}
+        global_dict = {}
         lines = j.split('\n')
         langs = set([l for (_, _, l, _) in _parse_code_lines(lines)
                      if l is not None and l in _LANGS])
@@ -255,18 +428,73 @@ def add_buttons(app, docname, source):
             if _SRC_DOWNLOAD_MARK in l:
                 lines[k] = _get_src_download_btn(
                     out_prefix, langs, lines)
-        # then add lang buttons
-        for k,l in enumerate(lines):
-            if _LANG_SELECTION_MARK in l:
-                lines[k] = _get_lang_selection_btn(langs)
-        source[i] = '\n'.join(lines)
+        # # then add lang buttons
+        # for k,l in enumerate(lines):
+        #     if _LANG_SELECTION_MARK in l:
+        #         lines[k] = _get_lang_selection_btn(langs)
+
+        output = ''
+        for in_code, lang, lines in _get_blocks(lines):
+            src = '\n'.join(lines)+'\n'
+            if in_code:
+                output += _get_mk_code_block(src, lang)
+                if lang == 'python' and any([w in docname for w in _EVAL_WHILTELIST]):
+                    status, blk_out = _get_python_block_output(src, global_dict, local_dict)
+                    if len(blk_out):
+                        output += '<div class=\"cell-results-header\">Output:</div>\n\n'
+                        output += _get_mk_code_block(blk_out, 'results')
+            else:
+                output += src
+        source[i] = output
+
+        # source[i] = '\n'.join(lines)
+
+
+def copy_artifacts(app):
+    """Copies artifacts needed for website presentation"""
+    dest_path = app.builder.outdir + '/error'
+    source_path = app.builder.srcdir + '/build_version_doc/artifacts'
+    _run_cmd('cd ' + app.builder.srcdir)
+    _run_cmd('rm -rf ' + dest_path)
+    _run_cmd('mkdir -p ' + dest_path)
+    _run_cmd('cp ' + source_path + '/404.html ' + dest_path)
+    _run_cmd('cp ' + source_path + '/api.html ' + dest_path)
+    dest_path = app.builder.outdir + '/_static'
+    _run_cmd('rm -rf ' + dest_path)
+    _run_cmd('mkdir -p ' + dest_path)
+    _run_cmd('cp ' + app.builder.srcdir + '/_static/mxnet.css ' + dest_path)
+
 
 def setup(app):
-    app.connect("builder-inited", build_mxnet)
-    app.connect("builder-inited", generate_doxygen)
-    app.connect("builder-inited", build_scala_docs)
-    # skipped to build r, it requires to install latex, which is kinds of too heavy
-    # app.connect("builder-inited", build_r_docs)
+    # If MXNET_DOCS_BUILD_MXNET is set something different than 1
+    # Skip the build step
+    if os.getenv('MXNET_DOCS_BUILD_MXNET') == '1'or _MXNET_DOCS_BUILD_MXNET:
+        print("Building MXNet!")
+        app.connect("builder-inited", build_mxnet)
+    if _DOXYGEN_DOCS:
+        print("Building Doxygen!")
+        app.connect("builder-inited", generate_doxygen)
+    if _SCALA_DOCS or _CLOJURE_DOCS:
+        print("Building Scala!")
+        app.connect("builder-inited", build_scala)
+    if _SCALA_DOCS:
+        print("Building Scala Docs!")
+        app.connect("builder-inited", build_scala_docs)
+    if _JAVA_DOCS:
+        print("Building Java Docs!")
+        app.connect("builder-inited", build_java_docs)
+    if _CLOJURE_DOCS:
+        print("Building Clojure Docs!")
+        app.connect("builder-inited", build_clojure_docs)
+    if _JULIA_DOCS:
+        print("Building Julia Docs!")
+        app.connect("builder-inited", build_julia_docs)
+    if _R_DOCS:
+        print("Building R Docs!")
+        app.connect("builder-inited", build_r_docs)
+    if _ARTIFACTS:
+        print("Copying Artifacts!")
+        app.connect("builder-inited", copy_artifacts)
     app.connect('source-read', convert_table)
     app.connect('source-read', add_buttons)
     app.add_config_value('recommonmark_config', {

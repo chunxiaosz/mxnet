@@ -1,3 +1,20 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
 # -*- coding: utf-8 -*-
 import sys, os, re, subprocess
 import mock
@@ -9,20 +26,20 @@ sys.path.insert(0, libpath)
 sys.path.insert(0, curr_path)
 
 # -- mock out modules
-MOCK_MODULES = ['numpy', 'numpy.testing', 'scipy', 'scipy.sparse', 'sklearn', 'matplotlib']
+MOCK_MODULES = ['scipy', 'scipy.sparse', 'sklearn']
 for mod_name in MOCK_MODULES:
     sys.modules[mod_name] = mock.Mock()
 
 # -- General configuration -----------------------------------------------------
 
 # If your documentation needs a minimal Sphinx version, state it here.
-needs_sphinx = '1.2'
+needs_sphinx = '1.5.6'
 
 # General information about the project.
 project = u'mxnet'
 author = u'%s developers' % project
-copyright = u'2015-2017, %s' % author
-github_doc_root = 'https://github.com/dmlc/mxnet/tree/master/docs/'
+copyright = u'2015-2018, %s' % author
+github_doc_root = 'https://github.com/apache/incubator-mxnet/tree/master/docs/'
 doc_root = 'http://mxnet.io/'
 
 # add markdown parser
@@ -42,6 +59,7 @@ extensions = [
     'sphinx.ext.autosummary',
     'sphinx.ext.napoleon',
     'sphinx.ext.mathjax',
+    'sphinx.ext.viewcode',
     'breathe',
     'mxdoc'
 ]
@@ -89,7 +107,8 @@ master_doc = 'index'
 
 # List of patterns, relative to source directory, that match files and
 # directories to ignore when looking for source files.
-exclude_patterns = ['virtualenv']
+exclude_patterns = ['3rdparty', 'api/python/model.md', 'build_version_doc', 'README.md', 'tutorial_utils', 'virtualenv']
+
 
 # The reST default role (used for this markup: `text`) to use for all documents.
 #default_role = None

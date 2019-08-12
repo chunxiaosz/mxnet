@@ -1,3 +1,20 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
 # coding: utf-8
 # pylint: disable=invalid-name, protected-access, too-many-locals, too-many-arguments, too-many-statements
 """Executor manager."""
@@ -110,7 +127,7 @@ def _bind_exec(sym, ctx, input_shapes, param_names, need_grad=False,
     assert(arg_types is not None)
 
     arg_arrays = []
-    grad_arrays = {} if need_grad != False else None
+    grad_arrays = {} if need_grad is not False else None
 
     arg_names = sym.list_arguments()
 
@@ -269,10 +286,13 @@ class DataParallelExecutorGroup(object):
         for texec in self.train_execs:
             texec.backward()
 
-    def update_metric(self, metric, labels):
+    def update_metric(self, metric, labels, pre_sliced=False):
         """Update evaluation metric with label and current outputs."""
-        for texec, islice in zip(self.train_execs, self.slices):
-            labels_slice = [label[islice] for label in labels]
+        for current_exec, (texec, islice) in enumerate(zip(self.train_execs, self.slices)):
+            if not pre_sliced:
+                labels_slice = [label[islice] for label in labels]
+            else:
+                labels_slice = labels[current_exec]
             metric.update(labels_slice, texec.outputs)
 
 class DataParallelExecutorManager(object):
@@ -419,6 +439,6 @@ class DataParallelExecutorManager(object):
         """Run backward on the current executor."""
         self.curr_execgrp.backward()
 
-    def update_metric(self, metric, labels):
+    def update_metric(self, metric, labels, pre_sliced=False):
         """Update metric with the current executor."""
-        self.curr_execgrp.update_metric(metric, labels)
+        self.curr_execgrp.update_metric(metric, labels, pre_sliced)

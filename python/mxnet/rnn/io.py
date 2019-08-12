@@ -1,3 +1,20 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
 # coding: utf-8
 # pylint: disable=too-many-arguments, too-many-locals
 """Definition of various recurrent neural network cells."""
@@ -10,7 +27,8 @@ import numpy as np
 from ..io import DataIter, DataBatch, DataDesc
 from .. import ndarray
 
-def encode_sentences(sentences, vocab=None, invalid_label=-1, invalid_key='\n', start_label=0):
+def encode_sentences(sentences, vocab=None, invalid_label=-1, invalid_key='\n',
+                     start_label=0, unknown_token=None):
     """Encode sentences and (optionally) build a mapping
     from string tokens to integer indices. Unknown keys
     will be added to vocabulary.
@@ -29,6 +47,9 @@ def encode_sentences(sentences, vocab=None, invalid_label=-1, invalid_key='\n', 
         of sentence by default.
     start_label : int
         lowest index.
+    unknown_token: str
+        Symbol to represent unknown token.
+        If not specified, unknown token will be skipped.
 
     Returns
     -------
@@ -48,9 +69,11 @@ def encode_sentences(sentences, vocab=None, invalid_label=-1, invalid_key='\n', 
         coded = []
         for word in sent:
             if word not in vocab:
-                assert new_vocab, "Unknown token %s"%word
+                assert (new_vocab or unknown_token), "Unknown token %s"%word
                 if idx == invalid_label:
                     idx += 1
+                if unknown_token:
+                    word = unknown_token
                 vocab[word] = idx
                 idx += 1
             coded.append(vocab[word])
@@ -94,16 +117,21 @@ class BucketSentenceIter(DataIter):
 
         ndiscard = 0
         self.data = [[] for _ in buckets]
+        valid_buckets = {}
+        for item in range(len(buckets)):
+            valid_buckets[item] = 0
+
         for i, sent in enumerate(sentences):
             buck = bisect.bisect_left(buckets, len(sent))
+            valid_buckets[buck] = 1
             if buck == len(buckets):
                 ndiscard += 1
                 continue
             buff = np.full((buckets[buck],), invalid_label, dtype=dtype)
             buff[:len(sent)] = sent
             self.data[buck].append(buff)
-
-        self.data = [np.asarray(i, dtype=dtype) for i in self.data]
+        buckets = [j for i, j in enumerate(buckets) if valid_buckets[i] == 1]
+        self.data = [np.asarray(i, dtype=dtype) for i in self.data if i]
 
         print("WARNING: discarded %d sentences longer than the largest bucket."%ndiscard)
 

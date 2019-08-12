@@ -1,3 +1,20 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License
+
 from __future__ import absolute_import as _abs
 
 import sys as _sys
@@ -67,19 +84,27 @@ cdef SymbolSetAttr(SymbolHandle handle, dict kwargs):
 
 
 _symbol_cls = SymbolBase
+_np_symbol_cls = None
 
 def _set_symbol_class(cls):
     global _symbol_cls
     _symbol_cls = cls
 
-cdef NewSymbol(SymbolHandle handle):
+
+def _set_np_symbol_class(cls):
+    global _np_symbol_cls
+    _np_symbol_cls = cls
+
+
+cdef NewSymbol(SymbolHandle handle, int is_np_sym=0):
     """Create a new symbol given handle"""
-    sym = _symbol_cls(None)
+    create_symbol_fn = _np_symbol_cls if is_np_sym else _symbol_cls
+    sym = create_symbol_fn(None)
     (<SymbolBase>sym).chandle = handle
     return sym
 
 
-def _symbol_creator(handle, args, kwargs, keys, vals, name):
+def _symbol_creator(handle, args, kwargs, keys, vals, name, is_np_op=0):
     cdef unsigned long long ihandle = handle
     cdef OpHandle chandle = <OpHandle>ihandle
     cdef vector[string] ckeys
@@ -126,4 +151,4 @@ def _symbol_creator(handle, args, kwargs, keys, vals, name):
         &csym_keys[0] if csym_keys.size() != 0 else NULL,
         &sym_args[0] if sym_args.size() != 0 else NULL))
 
-    return NewSymbol(ret_handle)
+    return NewSymbol(ret_handle, is_np_op)

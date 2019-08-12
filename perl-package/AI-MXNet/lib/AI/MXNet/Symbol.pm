@@ -1,3 +1,20 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
 package AI::MXNet::Symbol;
 
 =head1 NAME
@@ -7,8 +24,10 @@ package AI::MXNet::Symbol;
 
 use strict;
 use warnings;
+use AI::MXNet::NS;
 use AI::MXNet::Base;
 use AI::MXNet::Symbol::Base;
+use AI::MXNet::Symbol::Random;
 use AI::MXNet::Types;
 use Mouse;
 use AI::MXNet::Function::Parameters;
@@ -20,6 +39,7 @@ use overload
     '/'   => \&divide,
     '/='  => \&idivide,
     '**'  => \&power,
+    '%'   => \&mod,
     '=='  => \&equal,
     '!='  => \&not_equal,
     '>'   => \&greater,
@@ -55,7 +75,11 @@ method STORABLE_thaw($cloning, $json)
 method stringify($other=, $reverse=)
 {
     my $name = $self->name;
-    sprintf("<%s %s>", ref($self), $name ? $name : 'Grouped');
+    sprintf(
+        "<%s %s%s>",
+        ref($self),
+        $name ? ($name, '') : ('group [', join(', ', map { $_->name } @{ $self }) . ']')
+    );
 }
 
 method add(AI::MXNet::Symbol|Num $other, $reverse=)
@@ -169,6 +193,16 @@ method true_divide(AI::MXNet::Symbol|Num $other, $reverse=)
     return $self->divide($other, $reverse);
 }
 
+method mod(AI::MXNet::Symbol|Num $other, $reverse=)
+{
+    return _ufunc_helper(
+        $self,
+        $other,
+        qw/_Mod _ModScalar _RModScalar/,
+        $reverse
+    );
+}
+
 method maximum(AI::MXNet::Symbol|Num $other)
 {
     return _ufunc_helper(
@@ -196,6 +230,16 @@ method hypot(AI::MXNet::Symbol|Num $other)
     );
 }
 
+method reshape(@args)
+{
+    if(@args%2)
+    {
+        unshift @args, 'shape';
+    }
+    return $self->SUPER::reshape(@args);
+}
+
+
 method deepcopy()
 {
     my $handle = check_call(AI::MXNetCAPI::SymbolCopy($self->handle));
@@ -209,8 +253,14 @@ method call(@args)
     return $s;
 }
 
-method slice(Str|Index $index)
+method slice(@slices)
 {
+    confess("No slices supplied") unless @slices;
+    if(@slices > 1)
+    {
+        return $self->SUPER::slice(@slices);
+    }
+    my $index = $slices[0];
     ## __getitem__ tie needs to die
     if(not find_type_constraint('Index')->check($index))
     {
@@ -329,7 +379,7 @@ method attr_dict()
 
 method _set_attr(Str @args)
 {
-    my %kwargs = @args; 
+    my %kwargs = @args;
     while(my ($key, $val) = each(%kwargs))
     {
         check_call(
@@ -429,6 +479,25 @@ method list_auxiliary_states()
 }
 
 
+=head2 list_inputs
+
+    Lists all arguments and auxiliary states of this Symbol.
+
+    Returns
+    -------
+    inputs : array ref of str
+    List of all inputs.
+
+    Examples
+    --------
+    >>> my $bn = mx->sym->BatchNorm(name=>'bn');
+=cut
+
+method list_inputs()
+{
+    return scalar(check_call(AI::NNVMCAPI::SymbolListInputNames($self->handle, 0)));
+}
+
 =head2 infer_type
 
         Infer the type of outputs and arguments of given known types of arguments.
@@ -460,9 +529,9 @@ method list_auxiliary_states()
 =cut
 
 
-method infer_type(Str|Undef @args)
+method infer_type(Maybe[Str] @args)
 {
-    my ($positional_arguments, $kwargs, $kwargs_order) = _parse_arguments("Dtype", @args); 
+    my ($positional_arguments, $kwargs, $kwargs_order) = _parse_arguments("Dtype", @args);
     my $sdata = [];
     my $keys  = [];
     if(@$positional_arguments)
@@ -533,8 +602,8 @@ method infer_shape(Maybe[Str|Shape] @args)
         my ($arg_shapes) = $self->_infer_shape_impl(1, @args);
         my $arg_names    = $self->list_arguments;
         my @unknowns;
-        zip(sub {
-            my ($name, $shape) = @_;
+        for(zip($arg_names, $arg_shapes)) {
+            my ($name, $shape) = @$_;
             if(not ref $shape or not @$shape or not product(@$shape))
             {
                 if(@unknowns >= 10)
@@ -547,7 +616,7 @@ method infer_shape(Maybe[Str|Shape] @args)
                     push @unknowns, "$name @shape";
                 }
             }
-        }, $arg_names, $arg_shapes);
+        }
         AI::MXNet::Logging->warning(
             "Cannot decide shape for the following arguments "
             ."(0s in shape means unknown dimensions). "
@@ -594,7 +663,7 @@ method _infer_shape_impl(Maybe[Str|Shape] @args)
             push @{ $indptr }, scalar(@{ $sdata });
         }
     }
-    my $infer_func = $partial ? \&AI::MXNetCAPI::SymbolInferShapePartial : \&AI::MXNetCAPI::SymbolInferShape;
+    my $infer_func = $partial ? \&AI::MXNetCAPI::SymbolInferShapePartialEx : \&AI::MXNetCAPI::SymbolInferShapeEx;
     my ($arg_shapes, $out_shapes, $aux_shapes, $complete) = check_call(
         $infer_func->(
             $self->handle,
@@ -680,7 +749,7 @@ method _get_ndarray_inputs(
     my ($arg_handles, $arg_arrays) = ([], []);
     if(ref $args eq 'ARRAY')
     {
-        confess("Length of $arg_key do not match number of arguments") 
+        confess("Length of $arg_key do not match number of arguments")
             unless @$args == @$arg_names;
         @{ $arg_handles } = map { $_->handle } @{ $args };
         $arg_arrays = $args;
@@ -726,6 +795,9 @@ method _get_ndarray_inputs(
     :$type_dict  : hash ref of str->Dtype
         Input type map, name->dtype
 
+    :$type_dict  : hash ref of str->Stype
+        Storage type map, name->stype (for sparse operations)
+
     :$group2ctx : hash ref of string to AI::MXNet::Context
         The mapping of the ctx_group attribute to the context assignment.
 
@@ -756,13 +828,14 @@ method simple_bind(
     GradReq|ArrayRef[GradReq]|HashRef[GradReq]     :$grad_req='write',
     Maybe[HashRef[Shape]]                          :$shapes=,
     Maybe[HashRef[Dtype]]                          :$type_dict=,
+    Maybe[HashRef[Stype]]                          :$stype_dict=,
     Maybe[HashRef[AI::MXNet::Context]]             :$group2ctx=,
     Maybe[ArrayRef[Str]]                           :$shared_arg_names=,
     Maybe[AI::MXNet::Executor]                     :$shared_exec=,
     Maybe[HashRef[AI::MXNet::NDArray]]             :$shared_buffer=
 )
 {
-    my $num_provided_arg_types;
+    my $num_provided_arg_types = 0;
     my @provided_arg_type_names;
     my @provided_arg_type_data;
     if(defined $type_dict)
@@ -773,6 +846,18 @@ method simple_bind(
             push @provided_arg_type_data, DTYPE_STR_TO_MX->{$v};
         }
         $num_provided_arg_types = @provided_arg_type_names;
+    }
+    my $num_provided_arg_stypes = 0;
+    my @provided_arg_stype_names;
+    my @provided_arg_stype_data;
+    if(defined $stype_dict)
+    {
+        while(my ($k, $v) = each %{ $stype_dict })
+        {
+            push @provided_arg_stype_names, $k;
+            push @provided_arg_stype_data, STORAGE_TYPE_STR_TO_ID->{$v};
+        }
+        $num_provided_arg_stypes = @provided_arg_stype_names;
     }
     my @provided_arg_shape_data;
     # argument shape index in sdata,
@@ -853,7 +938,7 @@ method simple_bind(
         ($updated_shared_data, $in_arg_handles, $arg_grad_handles, $aux_state_handles, $exe_handle)
             =
         check_call(
-            AI::MXNetCAPI::ExecutorSimpleBind(
+            AI::MXNetCAPI::ExecutorSimpleBindEx(
                 $self->handle,
                 $ctx->device_type_id,
                 $ctx->device_id,
@@ -871,6 +956,9 @@ method simple_bind(
                 $num_provided_arg_types,
                 \@provided_arg_type_names,
                 \@provided_arg_type_data,
+                $num_provided_arg_stypes,
+                \@provided_arg_stype_names,
+                \@provided_arg_stype_data,
                 scalar(@shared_arg_name_list),
                 \@shared_arg_name_list,
                 defined $shared_buffer ? \%shared_data : undef,
@@ -891,12 +979,12 @@ method simple_bind(
     {
         while(my ($k, $v) = each %{ $updated_shared_data })
         {
-            $shared_buffer->{$k} = AI::MXNet::NDArray->new(handle => $v);
+            $shared_buffer->{$k} = AI::MXNet::NDArray->_ndarray_cls($v);
         }
     }
-    my @arg_arrays  = map { AI::MXNet::NDArray->new(handle => $_) } @{ $in_arg_handles };
-    my @grad_arrays = map { defined $_ ? AI::MXNet::NDArray->new(handle => $_) : undef  } @{ $arg_grad_handles };
-    my @aux_arrays  = map { AI::MXNet::NDArray->new(handle => $_) } @{ $aux_state_handles };
+    my @arg_arrays  = map { AI::MXNet::NDArray->_ndarray_cls($_) } @{ $in_arg_handles };
+    my @grad_arrays = map { defined $_ ? AI::MXNet::NDArray->_ndarray_cls($_) : undef  } @{ $arg_grad_handles };
+    my @aux_arrays  = map { AI::MXNet::NDArray->_ndarray_cls($_) } @{ $aux_state_handles };
     my $executor = AI::MXNet::Executor->new(
         handle    => $exe_handle,
         symbol    => $self,
@@ -1185,7 +1273,8 @@ method Variable(
     Maybe[Num]                    :$lr_mult=,
     Maybe[Num]                    :$wd_mult=,
     Maybe[Dtype]                  :$dtype=,
-    Maybe[AI::MXNet::Initializer] :$init=,
+    Maybe[Stype]                  :$stype=,
+    Maybe[Initializer]            :$init=,
     HashRef[Str]                  :$kwargs={},
     Maybe[Str]                    :$__layout__=
 )
@@ -1199,6 +1288,7 @@ method Variable(
     $attr->{__dtype__}   = DTYPE_STR_TO_MX->{ $dtype } if $dtype;
     $attr->{__init__}    = "$init" if defined $init;
     $attr->{__layout__}  = $__layout__ if defined $__layout__;
+    $attr->{__storage_type__} = STORAGE_TYPE_STR_TO_ID->{$stype} if defined $stype;
     while(my ($k, $v) = each %{ $kwargs })
     {
         if($k =~ /^__/ and $k =~ /__$/)
@@ -1281,6 +1371,7 @@ method load(Str $fname)
 }
 
 =head2 load_json
+
     Load symbol from json string.
 
     Parameters
@@ -1321,16 +1412,19 @@ method ones(Shape :$shape, Dtype :$dtype='float32', Maybe[Str] :$name=, Maybe[St
 
     Parameters
     ----------
-    start : number
+    :$start=0 : number
         Start of interval. The interval includes this value. The default start value is 0.
-    stop : number, optional
+    :$stop= : number, optional
         End of interval. The interval does not include this value.
-    step : number, optional
+    :$step=1.0 : number, optional
         Spacing between values
-    repeat : int, optional
+    :$repeat=1 : int, optional
         "The repeating time of all elements.
         E.g repeat=3, the element a will be repeated three times --> a, a, a.
-    dtype : type, optional
+    :$infer_range=0 : Bool
+        When set to 1, infer stop position from start, step, repeat, and
+        output tensor size.
+    :$dtype='float32' : type, optional
         The value type of the NDArray, default to np.float32
 
     Returns
@@ -1339,11 +1433,12 @@ method ones(Shape :$shape, Dtype :$dtype='float32', Maybe[Str] :$name=, Maybe[St
         The created Symbol
 =cut
 
-method arange(Index :$start=0, Index :$stop=, Num :$step=1.0, Index :$repeat=1, Maybe[Str] :$name=, Dtype :$dtype='float32')
+method arange(Index :$start=0, Index :$stop=, Num :$step=1.0, Index :$repeat=1, Bool :$infer_range=0, Maybe[Str] :$name=, Dtype :$dtype='float32')
 {
     return __PACKAGE__->_arange({
                  start => $start, (defined $stop ? (stop => $stop) : ()),
-                 step => $step, repeat => $repeat, name => $name, dtype => $dtype
+                 step => $step, repeat => $repeat, name => $name, dtype => $dtype,
+                 infer_range => $infer_range
     });
 }
 
@@ -1380,12 +1475,12 @@ sub _parse_arguments
             }
             else
             {
-                confess("Argument need to be of type $type");
+                confess("Argument needs to be of type $type");
             }
         }
         else
         {
-            confess("Argument need to be one type $type");
+            confess("Argument needs to be one type $type");
         }
     }
     return (\@positional_arguments, \%kwargs, \@kwargs_order);
@@ -1415,5 +1510,13 @@ sub  _ufunc_helper
         return __PACKAGE__->can($fn_symbol)->(__PACKAGE__, $lhs, $rhs);
     }
 }
+
+method histogram(@args) { __PACKAGE__->_histogram(@args%2 ? ('data', @args) : @args) }
+
+sub contrib { 'AI::MXNet::Contrib::Symbol' }
+sub random  { 'AI::MXNet::Symbol::Random' }
+sub sparse  { 'AI::MXNet::Symbol::Sparse' }
+sub linalg  { 'AI::MXNet::LinAlg::Symbol' }
+sub image   { 'AI::MXNet::Image::Symbol' }
 
 1;

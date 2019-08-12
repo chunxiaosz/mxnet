@@ -1,4 +1,21 @@
-# pylint: disable=too-many-instance-attributes, too-many-arguments
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+# pylint: disable=too-many-instance-attributes, too-many-arguments, unnecessary-pass
 """Provide some handy classes for user to implement a simple computation module
 in Python easily.
 """
@@ -77,7 +94,7 @@ class PythonModule(BaseModule):
     # Parameters of a module
     ################################################################################
     def get_params(self):
-        """Gets parameters, those are potentially copies of the the actual parameters used
+        """Gets parameters, those are potentially copies of the actual parameters used
         to do computation on the device. Subclass should override this method if contains
         parameters.
 
@@ -88,7 +105,7 @@ class PythonModule(BaseModule):
         return (dict(), dict())
 
     def init_params(self, initializer=Uniform(0.01), arg_params=None, aux_params=None,
-                    allow_missing=False, force_init=False):
+                    allow_missing=False, force_init=False, allow_extra=False):
         """Initializes the parameters and auxiliary states. By default this function
         does nothing. Subclass should override this method if contains parameters.
 
@@ -107,6 +124,10 @@ class PythonModule(BaseModule):
             called to fill those missing params.
         force_init : bool
             If ``True``, will force re-initialize even if already initialized.
+        allow_extra : boolean, optional
+            Whether allow extra parameters that are not needed by symbol.
+            If this is True, no error will be thrown when arg_params or aux_params
+            contain extra parameters that is not needed by the executor.
         """
         pass
 
@@ -117,7 +138,7 @@ class PythonModule(BaseModule):
         """
         pass
 
-    def update_metric(self, eval_metric, labels):
+    def update_metric(self, eval_metric, labels, pre_sliced=False):
         """Evaluates and accumulates evaluation metric on outputs of the last forward computation.
         Subclass should override this method if needed.
 
@@ -131,6 +152,9 @@ class PythonModule(BaseModule):
             # since we do not need labels, we are probably not a module with a loss
             # function or predictions, so just ignore this call
             return
+
+        if pre_sliced:
+            raise RuntimeError("PythonModule does not support presliced labels")
 
         # by default we expect our outputs are some scores that could be evaluated
         eval_metric.update(labels, self.get_outputs())

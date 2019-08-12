@@ -1,3 +1,20 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
 """Weight initializer."""
 from __future__ import absolute_import, print_function
 
@@ -15,10 +32,11 @@ from . import ndarray
 
 # inherit str for backward compatibility
 class InitDesc(str):
-    """Descriptor for the initialization pattern.
+    """
+    Descriptor for the initialization pattern.
 
-    Parameter
-    ---------
+    Parameters
+    ----------
     name : str
         Name of variable.
     attrs : dict of str to str
@@ -50,7 +68,7 @@ class Initializer(object):
         print_func : function
             A function that computes statistics of initialized arrays.
             Takes an `NDArray` and returns an `str`. Defaults to mean
-            absolute value str((|x|/size(x)).asscalar()).
+            absolute value str((abs(x)/size(x)).asscalar()).
         """
         self._verbose = verbose
         if print_func is None:
@@ -135,6 +153,18 @@ class Initializer(object):
             elif desc.endswith('beta'):
                 self._init_beta(desc, arr)
                 self._verbose_print(desc, 'beta', arr)
+            elif desc.endswith('min'):
+                self._init_zero(desc, arr)
+                self._verbose_print(desc, 'min', arr)
+            elif desc.endswith('max'):
+                self._init_one(desc, arr)
+                self._verbose_print(desc, 'max', arr)
+            elif desc.endswith('weight_quantize'):
+                self._init_quantized_weight(desc, arr)
+                self._verbose_print(desc, 'weight_quantize', arr)
+            elif desc.endswith('bias_quantize'):
+                self._init_quantized_bias(desc, arr)
+                self._verbose_print(desc, 'bias_quantize', arr)
             else:
                 self._init_default(desc, arr)
 
@@ -144,7 +174,7 @@ class Initializer(object):
         Parameters
         ----------
         name : str
-            Name of corrosponding NDArray.
+            Name of corresponding NDArray.
 
         arr : NDArray
             NDArray to be initialized.
@@ -179,6 +209,10 @@ class Initializer(object):
             self._init_zero(name, arr)
         elif name.endswith("moving_avg"):
             self._init_zero(name, arr)
+        elif name.endswith('min'):
+            self._init_zero(name, arr)
+        elif name.endswith('max'):
+            self._init_one(name, arr)
         else:
             self._init_default(name, arr)
 
@@ -189,7 +223,7 @@ class Initializer(object):
         c = (2 * f - 1 - f % 2) / (2. * f)
         for i in range(np.prod(shape)):
             x = i % shape[3]
-            y = (i / shape[3]) % shape[2]
+            y = (i // shape[3]) % shape[2]
             weight[i] = (1 - abs(x / f - c)) * (1 - abs(y / f - c))
         arr[:] = weight.reshape(shape)
 
@@ -207,6 +241,9 @@ class Initializer(object):
     def _init_bias(self, _, arr):
         arr[:] = 0.0
 
+    def _init_quantized_bias(self, _, arr):
+        arr[:] = 0
+
     def _init_gamma(self, _, arr):
         arr[:] = 1.0
 
@@ -216,6 +253,10 @@ class Initializer(object):
     def _init_weight(self, name, arr):
         """Abstract method to Initialize weight."""
         raise NotImplementedError("Must override it")
+
+    def _init_quantized_weight(self, _, arr):
+        _arr = random.randint(-127, 127, dtype='int32').asnumpy()
+        arr[:] = np.int8(_arr)
 
     def _init_default(self, name, _):
         raise ValueError(
@@ -407,12 +448,14 @@ class One(Initializer):
 
 @register
 class Constant(Initializer):
-    """Initializes the weights to a scalar value.
+    """Initializes the weights to a given value.
+    The value passed in can be a scalar or a NDarray that matches the shape
+    of the parameter to be set.
 
     Parameters
     ----------
-    value : float
-        Fill value.
+    value : float, NDArray
+        Value to set.
     """
     def __init__(self, value):
         super(Constant, self).__init__(value=value)
@@ -420,6 +463,12 @@ class Constant(Initializer):
 
     def _init_weight(self, _, arr):
         arr[:] = self.value
+
+    def dumps(self):
+        val = self._kwargs['value']
+        if not np.isscalar(val):
+            self._kwargs['value'] = val.tolist() if isinstance(val, np.ndarray) else val.asnumpy().tolist()
+        return json.dumps([self.__class__.__name__.lower(), self._kwargs])
 
 @register
 class Uniform(Initializer):
@@ -513,9 +562,9 @@ class Orthogonal(Initializer):
         nout = arr.shape[0]
         nin = np.prod(arr.shape[1:])
         if self.rand_type == "uniform":
-            tmp = np.random.uniform(-1.0, 1.0, (nout, nin))
+            tmp = random.uniform(-1.0, 1.0, shape=(nout, nin)).asnumpy()
         elif self.rand_type == "normal":
-            tmp = np.random.normal(0.0, 1.0, (nout, nin))
+            tmp = random.normal(0.0, 1.0, shape=(nout, nin)).asnumpy()
         u, _, v = np.linalg.svd(tmp, full_matrices=False) # pylint: disable=invalid-name
         if u.shape == tmp.shape:
             res = u
@@ -564,9 +613,12 @@ class Xavier(Initializer):
         self.magnitude = float(magnitude)
 
 
-    def _init_weight(self, _, arr):
+    def _init_weight(self, name, arr):
         shape = arr.shape
         hw_scale = 1.
+        if len(shape) < 2:
+            raise ValueError('Xavier initializer cannot be applied to vector {0}. It requires at'
+                             ' least 2D.'.format(name))
         if len(shape) > 2:
             hw_scale = np.prod(shape[2:])
         fan_in, fan_out = shape[1] * hw_scale, shape[0] * hw_scale
@@ -596,7 +648,7 @@ class MSRAPrelu(Xavier):
     https://arxiv.org/abs/1502.01852.
 
     This initializer is proposed for initialization related to ReLu activation,
-    it maked some changes on top of Xavier method.
+    it makes some changes on top of Xavier method.
 
     Parameters
     ----------
@@ -624,22 +676,23 @@ class Bilinear(Initializer):
         c = (2 * f - 1 - f % 2) / (2. * f)
         for i in range(np.prod(shape)):
             x = i % shape[3]
-            y = (i / shape[3]) % shape[2]
+            y = (i // shape[3]) % shape[2]
             weight[i] = (1 - abs(x / f - c)) * (1 - abs(y / f - c))
         arr[:] = weight.reshape(shape)
 
 
 @register
 class LSTMBias(Initializer):
-    """Initialize all bias of an LSTMCell to 0.0 except for
+    """Initialize all biases of an LSTMCell to 0.0 except for
     the forget gate whose bias is set to custom value.
 
     Parameters
     ----------
-    forget_bias: float, bias for the forget gate.
-        Jozefowicz et al. 2015 recommends setting this to 1.0.
+    forget_bias: float, default 1.0
+        bias for the forget gate. Jozefowicz et al. 2015 recommends
+        setting this to 1.0.
     """
-    def __init__(self, forget_bias):
+    def __init__(self, forget_bias=1.0):
         super(LSTMBias, self).__init__(forget_bias=forget_bias)
         self.forget_bias = forget_bias
 
@@ -674,7 +727,7 @@ class FusedRNN(Initializer):
     def __init__(self, init, num_hidden, num_layers, mode, bidirectional=False, forget_bias=1.0):
         if isinstance(init, string_types):
             klass, kwargs = json.loads(init)
-            init = _INITIALIZER_REGISTRY[klass.lower()](**kwargs)
+            init = registry._REGISTRY[klass.lower()](**kwargs)
         super(FusedRNN, self).__init__(init=init.dumps() if init is not None else None,
                                        num_hidden=num_hidden, num_layers=num_layers, mode=mode,
                                        bidirectional=bidirectional, forget_bias=forget_bias)

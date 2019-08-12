@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /*!
  * Copyright (c) 2017 Microsoft
  * Licensed under The Apache-2.0 License [see LICENSE for details]
@@ -14,10 +33,10 @@ DMLC_REGISTER_PARAMETER(DeformableConvolutionParam);
 
 template<>
 Operator* CreateOp<cpu>(DeformableConvolutionParam param, int dtype,
-                        std::vector<TShape> *in_shape,
-                        std::vector<TShape> *out_shape,
+                        mxnet::ShapeVector *in_shape,
+                        mxnet::ShapeVector *out_shape,
                         Context ctx) {
-  Operator *op = NULL;
+  Operator *op = nullptr;
   MSHADOW_REAL_TYPE_SWITCH(dtype, DType, {
     op = new DeformableConvolutionOp<cpu, DType>(param);
   })
@@ -26,9 +45,9 @@ Operator* CreateOp<cpu>(DeformableConvolutionParam param, int dtype,
 
 // DO_BIND_DISPATCH comes from operator_common.h
 Operator *DeformableConvolutionProp::CreateOperatorEx(Context ctx,
-                                            std::vector<TShape> *in_shape,
+                                            mxnet::ShapeVector *in_shape,
                                             std::vector<int> *in_type) const {
-  std::vector<TShape> out_shape, aux_shape;
+  mxnet::ShapeVector out_shape, aux_shape;
   std::vector<int> out_type, aux_type;
   CHECK(InferType(in_type, &out_type, &aux_type));
   CHECK(InferShape(in_shape, &out_shape, &aux_shape));
@@ -43,7 +62,7 @@ The deformable convolution operation is described in https://arxiv.org/abs/1703.
 For 2-D deformable convolution, the shapes are
 
 - **data**: *(batch_size, channel, height, width)*
-- **offset**: *(batch_size, num_deformable_group * kernel[0] * kernel[1], height, width)*
+- **offset**: *(batch_size, num_deformable_group * kernel[0] * kernel[1] * 2, height, width)*
 - **weight**: *(num_filter, channel, kernel[0], kernel[1])*
 - **bias**: *(num_filter,)*
 - **out**: *(batch_size, num_filter, out_height, out_width)*.
@@ -60,7 +79,7 @@ then we have::
 If ``no_bias`` is set to be true, then the ``bias`` term is ignored.
 
 The default data ``layout`` is *NCHW*, namely *(batch_size, channle, height,
-width)*. 
+width)*.
 
 If ``num_group`` is larger than 1, denoted by *g*, then split the input ``data``
 evenly into *g* parts along the channel axis, and also evenly split ``weight``
@@ -70,9 +89,9 @@ the *g* results.
 
 If ``num_deformable_group`` is larger than 1, denoted by *dg*, then split the
 input ``offset`` evenly into *dg* parts along the channel axis, and also evenly
-split ``out`` evenly into *dg* parts along the channel axis. Next compute the
-deformable convolution, apply the *i*-th part of the offset part on the *i*-th
-out.
+split ``data`` into *dg* parts along the channel axis. Next compute the
+deformable convolution, apply the *i*-th part of the offset on the *i*-th part
+of the data.
 
 
 Both ``weight`` and ``bias`` are learnable parameters.
